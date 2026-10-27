@@ -124,6 +124,13 @@ test('AltP sequential naming saves one then advances and Escape leaves remaining
 
 test('ShiftS searches enabled rows and native reopen resets to only the first image',async()=>{const f=fixture();await f.ready();await f.key('KeyS',{shift:true});await f.input('search-input','Text two');assert.match(f.main,/Text two/);assert.doesNotMatch(f.main,/Text one/);await f.key('Escape');await f.key('Tab');await f.key('ArrowRight');assert.match(f.main,/card kind-text focused selected[^>]*data-item-id="00000000-0000-4000-8000-000000000003"/);await f.key('Enter');await f.api.command('show');await f.ready();assert.equal(activeKind(f),'image');assert.deepEqual(selectedCards(f),[f.image]);});
 
+test('Unicode search matches Turkish dotted and dotless I, and mutated shelf fields invalidate cached rows',async()=>{
+ const f=fixture();await f.ready();const second=f.state.items.find(value=>value.id===f.text2);
+ second.text='İstanbul ışıksız';f.api.emit({items:f.state.items});await f.ready();await f.key('KeyS',{shift:true});await f.input('search-input','istanbul');assert.match(f.main,/İstanbul ışıksız/);assert.doesNotMatch(f.main,/Text one/);
+ await f.input('search-input','isiksiz');assert.match(f.main,/İstanbul ışıksız/);
+ second.text='Updated cached row';f.api.emit({items:f.state.items});await f.ready();await f.input('search-input','updated cached');assert.match(f.main,/Updated cached row/);assert.doesNotMatch(f.main,/İstanbul ışıksız/);
+});
+
 
 test('Settings retries pending deletion cleanup without clearing failure or deleting another record',async()=>{const f=fixture();await f.ready();await f.api.command('settings');await f.ready();assert.doesNotMatch(f.main,/data-action="retry-cleanup"/);const original=f.state.items.map(item=>item.id);f.state.needsDeletionCleanup=true;await f.api.command('settings');await f.ready();assert.match(f.main,/data-action="retry-cleanup"/);f.failCleanupOnce();await f.click('retry-cleanup');assert.equal(f.commands.at(-1).action,'cleanup');assert.deepEqual(f.commands.at(-1).payload,{});assert.equal(f.state.needsDeletionCleanup,true);assert.match(f.main,/data-action="retry-cleanup"/);assert.deepEqual(f.state.items.map(item=>item.id),original);await f.click('retry-cleanup');assert.equal(f.state.needsDeletionCleanup,false);assert.doesNotMatch(f.main,/data-action="retry-cleanup"/);assert.deepEqual(f.state.items.map(item=>item.id),original);});
 
