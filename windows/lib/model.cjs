@@ -24,7 +24,7 @@ const fail = message => { throw new Error(message); };
 function incompleteDeletion(message){const error=new Error('Permanent deletion is incomplete. '+message+' Retry cleanup in Settings.');error.committed=true;return error;}
 function text(value, maximum = 1024 * 1024, empty = false) {
   if (typeof value !== 'string' || value.length > maximum || (!empty && !value.length) || value.includes('\0')) fail('Invalid text');
-  return value;
+  return value.normalize('NFC');
 }
 function ids(value) {
   if (!Array.isArray(value) || value.length > 10000 || value.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id))) fail('Invalid item selection');
@@ -122,8 +122,11 @@ class Store {
   validateStored(item) {
     if(item.captureRevision!=null)ids([item.captureRevision]);if(item.trashRevision!=null)ids([item.trashRevision]);
     ids([item.id]); if (!KINDS.includes(item.kind) || !Array.isArray(item.folderIds) || !Array.isArray(item.tags)) fail('Invalid library record');
-    if (item.text != null) text(item.text, 1024 * 1024, true);
-    if(item.note!=null)text(item.note,1024*1024,true);
+    if(item.text != null)item.text=text(item.text, 1024 * 1024, true);
+    if(item.note!=null)item.note=text(item.note,1024*1024,true);
+    if(typeof item.name==='string')item.name=text(item.name,500,true);
+    if(typeof item.title==='string')item.title=text(item.title,500,true);
+    if(typeof item.ocrText==='string')item.ocrText=text(item.ocrText,1024*1024,true);
     if(item.retainedAt!=null&&(!Number.isFinite(item.retainedAt)||item.retainedAt<0))fail('Invalid saved timestamp');
     if(item.lastCopiedAt!=null&&(!Number.isFinite(item.lastCopiedAt)||item.lastCopiedAt<0))fail('Invalid copy timestamp');
     if(item.retainedAt==null&&(item.pinned||item.folderIds.length||item.tags.length))item.retainedAt=item.updatedAt||item.createdAt||this.clock();
@@ -134,14 +137,16 @@ class Store {
   }
   recoverPrivateSnapshot() {
     const temporaryPattern=/^library\.json(?:\.backup)?\.tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const candidates=[];
+    const candidates=[],recoverable=[];
     for(const name of fs.readdirSync(this.directory)){
       if(!temporaryPattern.test(name))continue;
       const file=path.join(this.directory,name);
       candidates.push(file);
       try{
         if(fs.lstatSync(file).isSymbolicLink())continue;
-        if(fs.statSync(file).size<=64*1024*1024)JSON.parse(fs.readFileSync(file,'utf8'));
+        if(fs.statSync(file).size>64*1024*1024)continue;
+        const parsed=JSON.parse(fs.readFileSync(file,'utf8'));
+        if(parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders))recoverable.push({file,mtime:fs.statSync(file).mtimeMs});
       }catch{}
     }
     let primaryUsable=false;
@@ -149,25 +154,29 @@ class Store {
       try{if(fs.statSync(this.file).size<=64*1024*1024){const parsed=JSON.parse(fs.readFileSync(this.file,'utf8'));primaryUsable=parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders);}}catch{}
     }
     if(!primaryUsable){
-      const backup=this.file+'.backup';
-      if(fs.existsSync(backup)&&!fs.lstatSync(backup).isSymbolicLink()&&fs.statSync(backup).size<=64*1024*1024){
-        try{const parsed=JSON.parse(fs.readFileSync(backup,'utf8'));if(parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders)){
-          const recovered=this.file+'.tmp-'+crypto.randomUUID();let descriptor;
-          try{descriptor=fs.openSync(recovered,'wx',0o600);fs.writeFileSync(descriptor,fs.readFileSync(backup));fs.fsyncSync(descriptor);fs.closeSync(descriptor);descriptor=null;fs.renameSync(recovered,this.file);}finally{if(descriptor!=null)fs.closeSync(descriptor);if(fs.existsSync(recovered))fs.unlinkSync(recovered);}
-        }}catch(error){if(!fs.existsSync(this.file)||fs.readFileSync(this.file,'utf8')==='')throw error;}
+      const backup=this.file+'.backup';let source;
+      const newestTemporary=recoverable.filter(candidate=>!/\.backup\.tmp-[0-9a-f-]+$/i.test(candidate.file)).sort((a,b)=>b.mtime-a.mtime)[0];
+      if(newestTemporary)source=newestTemporary.file;
+      else if(fs.existsSync(backup)&&!fs.lstatSync(backup).isSymbolicLink()&&fs.statSync(backup).size<=64*1024*1024){
+        try{const parsed=JSON.parse(fs.readFileSync(backup,'utf8'));if(parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders))source=backup;}catch(error){if(!fs.existsSync(this.file)||fs.readFileSync(this.file,'utf8')==='')throw error;}
+      }
+      if(source){
+        const recovered=this.file+'.tmp-'+crypto.randomUUID();let descriptor;
+        try{descriptor=fs.openSync(recovered,'wx',0o600);fs.writeFileSync(descriptor,fs.readFileSync(source));fs.fsyncSync(descriptor);fs.closeSync(descriptor);descriptor=null;fs.renameSync(recovered,this.file);}finally{if(descriptor!=null)fs.closeSync(descriptor);if(fs.existsSync(recovered))fs.unlinkSync(recovered);}
       }
     }
     for(const file of candidates)try{fs.unlinkSync(file);}catch(error){if(error.code!=='ENOENT')throw error;}
   }
   persist() {
     for(const destination of [this.file,this.file+'.backup'])if(fs.existsSync(destination)&&fs.lstatSync(destination).isSymbolicLink())fail('Library files must not be symlinks.');
-    const temporary = this.file + '.tmp-' + crypto.randomUUID();
-    let descriptor;
+    const temporary=this.file+'.tmp-'+crypto.randomUUID(),backupTemporary=this.file+'.backup.tmp-'+crypto.randomUUID();
+    const serialized=JSON.stringify(this.data);const temporaryFiles=[temporary,backupTemporary];let descriptors=[];
     try {
-      descriptor = fs.openSync(temporary, 'wx', 0o600); fs.writeFileSync(descriptor, JSON.stringify(this.data)); fs.fsyncSync(descriptor); fs.closeSync(descriptor); descriptor = null;
-      if (fs.existsSync(this.file)) fs.copyFileSync(this.file, this.file + '.backup');
-      fs.renameSync(temporary, this.file);this.revision++;
-    } finally { if (descriptor != null) fs.closeSync(descriptor); if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+      const primaryDescriptor=fs.openSync(temporary,'wx',0o600);descriptors.push(primaryDescriptor);fs.writeFileSync(primaryDescriptor,serialized);fs.fsyncSync(primaryDescriptor);fs.closeSync(primaryDescriptor);descriptors=descriptors.filter(descriptor=>descriptor!==primaryDescriptor);
+      const backupDescriptor=fs.openSync(backupTemporary,'wx',0o600);descriptors.push(backupDescriptor);fs.writeFileSync(backupDescriptor,serialized);fs.fsyncSync(backupDescriptor);fs.closeSync(backupDescriptor);descriptors=descriptors.filter(descriptor=>descriptor!==backupDescriptor);
+      fs.renameSync(backupTemporary,this.file+'.backup');
+      fs.renameSync(temporary,this.file);this.revision++;
+    } finally {for(const descriptor of descriptors)try{fs.closeSync(descriptor);}catch{}for(const file of temporaryFiles)try{fs.unlinkSync(file);}catch(error){if(error.code!=='ENOENT')throw error;} }
   }
   mediaReferences(){return new Set(this.data.items.flatMap(item=>[item.imageFile,item.renderedFile,item.thumbnailFile,item.videoFile,item.renderedVideoFile]).filter(Boolean));}
   preparePermanentDeletion(){
