@@ -102,6 +102,7 @@ class Store {
     if(fs.lstatSync(this.mediaDirectory).isSymbolicLink())fail('Managed media must not be a symlink.');
     this.file = path.join(this.directory, 'library.json');
     this.data = {schema: 1, items: [], folders: [], settings: clone(DEFAULTS)};
+    this.recoverPrivateSnapshot();
     if (fs.existsSync(this.file)) {
       if(fs.lstatSync(this.file).isSymbolicLink())fail('Library must not be a symlink.');
       if (fs.statSync(this.file).size > 64 * 1024 * 1024) fail('Library exceeds safe load size');
@@ -130,6 +131,33 @@ class Store {
     if(item.recording!==undefined&&typeof item.recording!=='boolean')fail('Invalid recording record');
     if(item.recording){if(item.kind!=='image'||!item.videoFile||!item.imageFile)fail('Invalid recording record');recordingMetadata(item);}
     for(const key of ['videoFile','renderedVideoFile'])if(item[key]&&(!item.recording||!/^[a-f0-9]{64}\.(mov|mp4)$/.test(item[key])))fail('Unsafe recording path');
+  }
+  recoverPrivateSnapshot() {
+    const temporaryPattern=/^library\.json(?:\.backup)?\.tmp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const candidates=[];
+    for(const name of fs.readdirSync(this.directory)){
+      if(!temporaryPattern.test(name))continue;
+      const file=path.join(this.directory,name);
+      candidates.push(file);
+      try{
+        if(fs.lstatSync(file).isSymbolicLink())continue;
+        if(fs.statSync(file).size<=64*1024*1024)JSON.parse(fs.readFileSync(file,'utf8'));
+      }catch{}
+    }
+    let primaryUsable=false;
+    if(fs.existsSync(this.file)&&!fs.lstatSync(this.file).isSymbolicLink()){
+      try{if(fs.statSync(this.file).size<=64*1024*1024){const parsed=JSON.parse(fs.readFileSync(this.file,'utf8'));primaryUsable=parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders);}}catch{}
+    }
+    if(!primaryUsable){
+      const backup=this.file+'.backup';
+      if(fs.existsSync(backup)&&!fs.lstatSync(backup).isSymbolicLink()&&fs.statSync(backup).size<=64*1024*1024){
+        try{const parsed=JSON.parse(fs.readFileSync(backup,'utf8'));if(parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders)){
+          const recovered=this.file+'.tmp-'+crypto.randomUUID();let descriptor;
+          try{descriptor=fs.openSync(recovered,'wx',0o600);fs.writeFileSync(descriptor,fs.readFileSync(backup));fs.fsyncSync(descriptor);fs.closeSync(descriptor);descriptor=null;fs.renameSync(recovered,this.file);}finally{if(descriptor!=null)fs.closeSync(descriptor);if(fs.existsSync(recovered))fs.unlinkSync(recovered);}
+        }}catch(error){if(!fs.existsSync(this.file)||fs.readFileSync(this.file,'utf8')==='')throw error;}
+      }
+    }
+    for(const file of candidates)try{fs.unlinkSync(file);}catch(error){if(error.code!=='ENOENT')throw error;}
   }
   persist() {
     for(const destination of [this.file,this.file+'.backup'])if(fs.existsSync(destination)&&fs.lstatSync(destination).isSymbolicLink())fail('Library files must not be symlinks.');
