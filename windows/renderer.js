@@ -45,7 +45,7 @@ function languageCode(){const configured=state.settings.language||'system',code=
 const t = text => window.clipboardLineTranslations?.[languageCode()]?.[text] || (languageCode()==='tr'?TR[text]:null) || text;
 const esc = value => String(value ?? '').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const attr = esc;
-const fold = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase();
+const fold = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase().replace(/\u0131/g,'i');
 let indexedItems=null,itemIndex=new Map();
 const item = id => {if(indexedItems!==state.items){indexedItems=state.items;itemIndex=new Map(state.items.map(value=>[value.id,value]));}return itemIndex.get(id);};
 const saved = value => value.pinned || value.retainedAt!=null || value.folderIds?.length || value.tags?.length;
@@ -105,9 +105,13 @@ function toast(message) { const target=document.getElementById('toast'); target.
 function visibleKinds() { return state.settings.visibleKinds?.length ? KINDS.filter(kind=>state.settings.visibleKinds.includes(kind)) : KINDS; }
 let tokenQuery=null,searchTokens=[];
 function matches(value,query) { const hay=fold([value.name,value.title,value.text,value.url,value.note,value.ocrText,...(value.tags||[])].join(' '));if(tokenQuery!==query){tokenQuery=query;searchTokens=fold(query).trim().split(/\s+/);}return searchTokens.every(token=>hay.includes(token)); }
-let shelfItemsSource=null,shelfItemsQuery=null,shelfRows=new Map();
+let shelfItemsSource=null,shelfItemsSignature=null,shelfItemsQuery=null,shelfRows=new Map();
+function shelfItemsFingerprint(items){
+ return JSON.stringify(items.map(value=>[value.id,value.kind,value.createdAt,value.updatedAt,value.pinned,value.trashedAt,value.hiddenFromShelf,value.name,value.title,value.text,value.url,value.note,value.ocrText,...(value.tags||[])]));
+}
 function rowItems(kind) {
- if(shelfItemsSource!==state.items||shelfItemsQuery!==ui.search){shelfItemsSource=state.items;shelfItemsQuery=ui.search;shelfRows.clear();}
+ const signature=shelfItemsFingerprint(state.items);
+ if(shelfItemsSource!==state.items||shelfItemsSignature!==signature||shelfItemsQuery!==ui.search){shelfItemsSource=state.items;shelfItemsSignature=signature;shelfItemsQuery=ui.search;shelfRows.clear();}
  const key=kind+':'+!!ui.pinned[kind];if(!shelfRows.has(key))shelfRows.set(key,state.items.filter(value=>value.kind===kind&&!value.trashedAt&&!value.hiddenFromShelf&&(!ui.pinned[kind]||value.pinned)&&(!ui.search||matches(value,ui.search))).sort((a,b)=>b.createdAt-a.createdAt));return shelfRows.get(key);
 }
 function folderIncludes(value,id) { const ids=new Set([id]); let changed=true; while(changed){changed=false; for(const folder of state.folders)if(ids.has(folder.parentId)&&!ids.has(folder.id)){ids.add(folder.id);changed=true;}} return value.folderIds?.some(folder=>ids.has(folder)); }
