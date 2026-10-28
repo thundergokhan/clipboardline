@@ -441,7 +441,7 @@ else app.whenReady().then(async()=>{
   window.webContents.on('did-finish-load',()=>{lastBroadcastLibraryRevision=-1;});
   ipcMain.handle('clipboardline:state',event=>{trusted(event);return state();});
   ipcMain.on('clipboardline:shelf-motion-finished',(event,value)=>{trusted(event);shelfMotion.acknowledge(value);});
-  ipcMain.handle('clipboardline:command',(event,action,payload)=>{trusted(event);const run=ipcCommandQueue.then(()=>command(action,payload));ipcCommandQueue=run.catch(()=>{});return run.catch(error=>{notify(error.message);return state({error:error.message});});});
+  ipcMain.handle('clipboardline:command',(event,action,payload)=>{trusted(event);if(action==='cancelTrim'){if(typeof payload?.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id))throw new Error('Invalid recording identity');recordingTrims.get(payload.id)?.abort();return state();}const run=ipcCommandQueue.then(()=>command(action,payload));ipcCommandQueue=run.catch(()=>{});return run.catch(error=>{notify(error.message);return state({error:error.message});});});
   window.on('blur',()=>{if(shortcutRecording){finishShortcutRecording();broadcast({surfaceOnly:true});}});
   window.on('hide',()=>finishShortcutRecording());
   window.webContents.on('render-process-gone',()=>finishShortcutRecording());
