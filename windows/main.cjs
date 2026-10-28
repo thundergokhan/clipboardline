@@ -325,7 +325,7 @@ async function command(action,payload={}) {
   else if(action==='windowMinimize'){if(view!=='shelves'){rememberNormalBounds();window.minimize();}}
   else if(action==='windowMaximize'){if(view!=='shelves'){if(window.isMaximized())window.unmaximize();else window.maximize();rememberNormalBounds();}}
   else if(action==='copy'||action==='paste')await copy(payload,action==='paste');
-  else if(action==='cancelTrim'){recordingTrims.get(payload.id)?.abort();result={canceled:true};}
+  else if(action==='cancelTrim'){if(typeof payload.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(payload.id))throw new Error('Invalid recording identity');recordingTrims.get(payload.id)?.abort();result={canceled:true};}
   else if(action==='trimRecording'){
     const item=store.item(payload.id);
     if(!item.recording||item.trashedAt||recordingTrims.has(item.id))throw new Error('Select an available recording.');

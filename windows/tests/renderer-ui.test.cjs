@@ -9,7 +9,7 @@ const vm=require('node:vm');
 const crypto=require('node:crypto');
 const {execFileSync}=require('node:child_process');
 
-test('shared renderer controls provide accessible labels and the document declares a language',()=>{const renderer=fs.readFileSync(path.join(__dirname,'..','renderer.js'),'utf8');const index=fs.readFileSync(path.join(__dirname,'..','index.html'),'utf8');assert.match(renderer,/aria-label=.*esc\(t\(label\)/);assert.match(index,/^<!doctype html>\n<html lang="en">/i);assert.match(index,/role="status" aria-live="polite"/);});
+test('shared renderer controls provide accessible labels and the document declares a language',()=>{const renderer=fs.readFileSync(path.join(__dirname,'..','renderer.js'),'utf8');const index=fs.readFileSync(path.join(__dirname,'..','index.html'),'utf8');assert.match(renderer,/aria-label=.*esc\(t\(label\)/);assert.match(index.replace(/\r\n/g,'\n'),/^<!doctype html>\n<html lang="en">/i);assert.match(index,/role="status" aria-live="polite"/);});
 
 function fixture({deferInitialState=false,initialVisible=true,queuedAnimationFrames=false,imageRaster={width:900,height:220},imageDocument=false}={}){
  const listeners=new Map(),nodes=new Map(),commands=[],imageLoads=[],animationFrames=[],paintCalls=[];let exportFailures=0;

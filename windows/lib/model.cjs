@@ -23,8 +23,10 @@ const clone = value => structuredClone(value);
 const fail = message => { throw new Error(message); };
 function incompleteDeletion(message){const error=new Error('Permanent deletion is incomplete. '+message+' Retry cleanup in Settings.');error.committed=true;return error;}
 function text(value, maximum = 1024 * 1024, empty = false) {
-  if (typeof value !== 'string' || value.length > maximum || (!empty && !value.length) || value.includes('\0')) fail('Invalid text');
-  return value.normalize('NFC');
+  if (typeof value !== 'string' || value.includes('\0')) fail('Invalid text');
+  const normalized=value.normalize('NFC');
+  if (normalized.length > maximum || (!empty && !normalized.length)) fail('Invalid text');
+  return normalized;
 }
 function ids(value) {
   if (!Array.isArray(value) || value.length > 10000 || value.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/.test(id))) fail('Invalid item selection');
@@ -78,7 +80,12 @@ function settings(patch, previous = DEFAULTS) {
   }
   return out;
 }
-function trashUndoFingerprint(item){return crypto.createHash('sha256').update(JSON.stringify(item)).digest('hex');}
+function trashUndoFingerprint(item){
+  const hash=crypto.createHash('sha256');
+  for(const key of ['id','kind','text','url','name','title','note','ocrText','imageFile','renderedFile','videoFile','renderedVideoFile','trashedAt','updatedAt','captureRevision'])hash.update(JSON.stringify(item[key]??null));
+  for(const key of ['folderIds','tags','annotations','crop'])hash.update(JSON.stringify(Array.isArray(item[key])||item[key]?.constructor===Object?item[key]:null));
+  return hash.digest('hex');
+}
 function trashUndoMatches(item,entry){return !!item&&item.trashedAt!=null&&item.trashedAt===entry.afterTrashedAt&&item.updatedAt===entry.afterUpdatedAt&&(item.captureRevision??null)===entry.captureRevision&&trashUndoFingerprint(item)===entry.fingerprint;}
 function availableTrashUndo(items,journal){if(!journal?.length)return false;const byID=new Map(items.map(item=>[item.id,item]));for(let index=journal.length-1;index>=0;index--)if(journal[index].some(entry=>trashUndoMatches(byID.get(entry.id),entry)))return true;return false;}
 function saved(item) { return item.retainedAt != null || item.pinned || item.folderIds.length > 0 || item.tags.length > 0; }
@@ -146,19 +153,22 @@ class Store {
         if(fs.lstatSync(file).isSymbolicLink())continue;
         if(fs.statSync(file).size>64*1024*1024)continue;
         const parsed=JSON.parse(fs.readFileSync(file,'utf8'));
-        if(parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders))recoverable.push({file,mtime:fs.statSync(file).mtimeMs});
+        if(parsed.schema===1&&Array.isArray(parsed.items)&&parsed.items.length<=20000&&Array.isArray(parsed.folders)&&!parsed.items.some(item=>!item||typeof item!=='object'||Array.isArray(item))){
+          parsed.items.forEach(item=>this.validateStored(item));
+          recoverable.push({file,mtime:fs.statSync(file).mtimeMs});
+        }
       }catch{}
     }
-    let primaryUsable=false;
+    let primaryUsable=false,primaryRejected=false;
     if(fs.existsSync(this.file)&&!fs.lstatSync(this.file).isSymbolicLink()){
-      try{if(fs.statSync(this.file).size<=64*1024*1024){const parsed=JSON.parse(fs.readFileSync(this.file,'utf8'));primaryUsable=parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders);}}catch{}
+      try{if(fs.statSync(this.file).size<=64*1024*1024){const parsed=JSON.parse(fs.readFileSync(this.file,'utf8'));if(parsed.schema===1&&Array.isArray(parsed.items)&&parsed.items.length<=20000&&Array.isArray(parsed.folders)&&!parsed.items.some(item=>!item||typeof item!=='object'||Array.isArray(item))){try{parsed.items.forEach(item=>this.validateStored(item));primaryUsable=true;}catch{primaryRejected=true;}}}}catch{}
     }
-    if(!primaryUsable){
+    if(!primaryUsable&&!primaryRejected){
       const backup=this.file+'.backup';let source;
       const newestTemporary=recoverable.filter(candidate=>!/\.backup\.tmp-[0-9a-f-]+$/i.test(candidate.file)).sort((a,b)=>b.mtime-a.mtime)[0];
       if(newestTemporary)source=newestTemporary.file;
       else if(fs.existsSync(backup)&&!fs.lstatSync(backup).isSymbolicLink()&&fs.statSync(backup).size<=64*1024*1024){
-        try{const parsed=JSON.parse(fs.readFileSync(backup,'utf8'));if(parsed.schema===1&&Array.isArray(parsed.items)&&Array.isArray(parsed.folders))source=backup;}catch(error){if(!fs.existsSync(this.file)||fs.readFileSync(this.file,'utf8')==='')throw error;}
+        try{const parsed=JSON.parse(fs.readFileSync(backup,'utf8'));if(parsed.schema===1&&Array.isArray(parsed.items)&&parsed.items.length<=20000&&Array.isArray(parsed.folders)&&!parsed.items.some(item=>!item||typeof item!=='object'||Array.isArray(item))){parsed.items.forEach(item=>this.validateStored(item));source=backup;}}catch(error){if(!fs.existsSync(this.file)||fs.readFileSync(this.file,'utf8')==='')throw error;}
       }
       if(source){
         const recovered=this.file+'.tmp-'+crypto.randomUUID();let descriptor;
@@ -174,8 +184,17 @@ class Store {
     try {
       const primaryDescriptor=fs.openSync(temporary,'wx',0o600);descriptors.push(primaryDescriptor);fs.writeFileSync(primaryDescriptor,serialized);fs.fsyncSync(primaryDescriptor);fs.closeSync(primaryDescriptor);descriptors=descriptors.filter(descriptor=>descriptor!==primaryDescriptor);
       const backupDescriptor=fs.openSync(backupTemporary,'wx',0o600);descriptors.push(backupDescriptor);fs.writeFileSync(backupDescriptor,serialized);fs.fsyncSync(backupDescriptor);fs.closeSync(backupDescriptor);descriptors=descriptors.filter(descriptor=>descriptor!==backupDescriptor);
-      fs.renameSync(backupTemporary,this.file+'.backup');
-      fs.renameSync(temporary,this.file);this.revision++;
+      fs.renameSync(temporary,this.file);
+      try{fs.renameSync(backupTemporary,this.file+'.backup');}
+      catch(error){
+        this.data.pendingBackupRefresh=true;
+        const flagged=this.file+'.tmp-'+crypto.randomUUID();temporaryFiles.push(flagged);
+        const flaggedDescriptor=fs.openSync(flagged,'wx',0o600);descriptors.push(flaggedDescriptor);
+        fs.writeFileSync(flaggedDescriptor,JSON.stringify(this.data));fs.fsyncSync(flaggedDescriptor);fs.closeSync(flaggedDescriptor);descriptors=descriptors.filter(descriptor=>descriptor!==flaggedDescriptor);
+        fs.renameSync(flagged,this.file);
+        const problem=incompleteDeletion(error.message);this.privacyWarning=problem.message;throw problem;
+      }
+      this.revision++;
     } finally {for(const descriptor of descriptors)try{fs.closeSync(descriptor);}catch{}for(const file of temporaryFiles)try{fs.unlinkSync(file);}catch(error){if(error.code!=='ENOENT')throw error;} }
   }
   mediaReferences(){return new Set(this.data.items.flatMap(item=>[item.imageFile,item.renderedFile,item.thumbnailFile,item.videoFile,item.renderedVideoFile]).filter(Boolean));}

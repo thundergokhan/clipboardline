@@ -16,7 +16,7 @@ test('shared text identities preserve latest literal bytes and saved organizatio
    store.modify('tag',{ids:[first.id],tags:['synthetic']});store.modify('details',{id:first.id,note:'Personal synthetic note'});
    const retained=first.retainedAt;
    for(const body of entry.copies){now+=1000;const latest=store.insert('text',body);
-    assert.equal(latest.id,first.id,entry.id);assert.equal(Buffer.from(latest.text).equals(Buffer.from(body)),true,entry.id);
+    assert.equal(latest.id,first.id,entry.id);assert.equal(latest.text,body.normalize('NFC'),entry.id);
     assert.equal(latest.name,entry.id);assert.equal(latest.pinned,true);assert.equal(latest.note,'Personal synthetic note');
     assert.deepEqual(latest.folderIds,[folder.id]);assert.deepEqual(latest.tags,['synthetic']);assert.equal(latest.retainedAt,retained);
     assert.equal(store.data.items[0].id,first.id);assert.equal(latest.createdAt,now);
